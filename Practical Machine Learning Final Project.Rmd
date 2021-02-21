@@ -1,0 +1,153 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "D.See"
+date: "2/19/2021"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, comment="", message=FALSE}
+library(caret);library(ggplot2)
+```
+
+### Loading and preparing the data
+
+After loading the data I prepared both the quiz data set and the original data set by filling in the blank spaces with NA. In addition, any column that was more than 95% NA was removed. The first 7 columns were removed because they contained no relevant information for this project. Finally, the "classe" variable in the original data set was converted to a factor.
+
+```{r}
+quizData <- read.csv("pml-testing.csv"); origData <- read.csv("pml-training.csv")
+quizData[quizData==""]<-NA; origData[origData==""]<-NA
+quizNAPercents <- sapply(quizData, function(x) mean(is.na(x))) 
+origNAPercents <- sapply(origData, function(x) mean(is.na(x)))
+origNAPercents[origNAPercents > .95] <- 1
+quizReduced <- quizData[ , !(as.logical(quizNAPercents)) ] 
+origReduced <- origData[ , !(as.logical(origNAPercents)) ]
+quizReduced <- quizReduced[ , -c(1:7)]
+origReduced <- origReduced[ , -c(1:7)]
+origReduced$classe <- as.factor(origReduced$classe)
+```
+
+<br />
+
+### Splitting the data
+
+After preparing the data, it was split into a training, validation, and test set. The training set contained 60% of the original data. The validation contained 20% of the original data and the test set contained 20% of the original data.
+
+```{r}
+inBuild <- createDataPartition(y=origReduced$classe, p=.8, list=FALSE)
+validation <- origReduced[-inBuild, ] #20% of data
+buildData <- origReduced[inBuild, ] #80% of data
+inTrain <- createDataPartition(y=buildData$classe, p=.75, list=FALSE)
+training <- buildData[inTrain, ] #60% of data
+testing <- buildData[-inTrain, ] #20% of data
+```
+
+<br />
+
+### Selection of variables
+
+#### Correlation of variables
+
+Correlation between variables was checked to see if any pairs of variables were highly correlated. Columns to remove in order to reduce pair-wise correlations were flagged at the cutoff of .9.
+
+```{r, comment=""}
+cr <- cor(training[ , 1:52])
+findCorrelation(cr, cutoff=.9, verbose=FALSE, names=FALSE, exact=ncol(cr)<100)
+```
+
+#### Near Zero variance
+
+Near zero variance was checked to see if any variables could be eliminated based on this criteria. Even the variables with the lowest freqRatio and percentUnique values were not classified as zeroVar or nzv.
+
+```{r, comment=""}
+nsv <- nearZeroVar(training, saveMetrics = TRUE)
+head(nsv[order(nsv$freqRatio, nsv$percentUnique) , ])
+```
+
+#### Box plots 
+
+Box plots of scaled variables vs the classe variable were created to determine if certain variables were helpful in distinguishing between the levels of the classe variable. One such box plot is shown below.
+
+```{r, fig.align='center', fig.height=3, fig.width=5}
+qplot(classe, scale(total_accel_belt), data=training, fill=classe, geom=c("boxplot")) 
+```
+
+Ultimately, none of the variables were eliminated after testing the models on the validation data set. The models seemed to do an excellent job at predicting within the validation set based on the accuracy criteria and there were no indications of overfitting.
+
+<br />
+
+### Choosing models
+
+A random forest model and a gradient boosting machine (gbm) were chosen for there ability to powerfully predict categorical variables. Regression models were not considered because of the high correlation between many of the variables and because random forests and gradient boosting machines typically do better when predicting categorical variables than regression models. Naive Bayes was not considered because the assumption of independence between the variables did not seem reasonable.
+
+#### Random Forest with 10-fold cross-validation
+
+The trainControl method was used to specify 10-fold cross-validation in creating the model. The data was pre-processed in the train function by centering and scaling it. The number of variables available to determine the split at each node, (mtry), is optimized in the call to the train function. Finally, the metric used to determine model quality was percent accuracy.
+
+```{r, comment=""}
+ctrl <- trainControl(method="cv", number=10)
+modFitRF <- train(classe~., data=training, method="rf", preProcess=c("center", "scale"), metric="Accuracy", trControl=ctrl)
+```
+
+The random forest model was tested on the validation data set and the resulting confusion matrix was created.
+
+```{r, comment=""}
+predictions <- predict(modFitRF, validation[ , -53])              
+confusionMatrix(predictions, as.factor(validation$classe))
+```
+
+A graph of the number of randomly selected variables, (tuning parameter mtry), vs the model accuracy is given below. One can see the value of mtry that results in the highest accuracy.
+
+```{r, fig.align='center', fig.height=3, fig.width=5}
+ggplot(modFitRF)
+```
+
+#### Gradient boosting machine with 10-fold cross validation
+
+The trainControl method was used to specify 10-fold cross-validation in creating the model. The data was pre-processed in the train function by centering and scaling it. In addition, a grid of tuning parameters was created and used with the model to determine the optimal values for learning rate, (shrinkage), number of trees, and tree depth. The fraction of training set observations selected to make the next tree was set to the default of 50% to prevent overfitting. Finally, the metric used to determine model quality was percent accuracy.
+
+```{r, comment=""}
+ctrlGBM <- trainControl(method="cv", number=10)
+tuningGridGBMFinal <- expand.grid(shrinkage=c(.05,.1,.2), n.trees=c(100,150,200), interaction.depth=c(1,2,3,4), n.minobsinnode = 10  )
+modFitGBMFinal <- train(classe~., data=training, method="gbm", preProcess=c("center", "scale"), tuneGrid = tuningGridGBMFinal, verbose=FALSE, metric="Accuracy", trControl=ctrlGBM, bag.fraction=.5)
+```
+
+The GBM model was tested on the validation data set and the resulting confusion matrix was created.
+
+```{r, comment=""}
+predictionsGBM <- predict(modFitGBMFinal, validation[ , -53])              
+confusionMatrix(predictionsGBM, as.factor(validation$classe))
+```
+
+A graph showing the relationship between model accuracy and the tuning parameters tree depth, learning rate (.05, .1, .2), and number of boosting iterations is shown below. The graph clearly shows the values of the tuning parameters that result in the highest accuracy.
+
+```{r, fig.align='center', fig.height=4, fig.width=5}
+ggplot(modFitGBMFinal)
+```
+
+<br />
+
+### Final model choice
+
+After testing each model on the validation set, the random forest model proved to be the best based on the overall accuracy shown in the confusion matrix print out. The random forest model was then applied to the test set to estimate the out of sample error.
+
+<br />
+
+### Out of sample error estimate
+
+```{r, comment=""}
+predictions <- predict(modFitRF, testing[ , -53])               
+cf <- confusionMatrix(predictions, as.factor(testing$classe))
+cf
+```
+
+The overall accuracy from the confusion matrix print out can be seen below along with the estimated out of sample error rate.
+
+The overall accuracy of the random forest model on the testing data set is `r cf$overall[1]` .
+
+The estimate of the out of sample error rate is `r 1-cf$overall[1]` .
+
